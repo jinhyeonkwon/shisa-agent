@@ -57,7 +57,7 @@ import { withCalendarColor, withCalendarRemoved, withCalendarRenamed, withCalend
 import { squirrelPlan, loginItemTarget, appUserModelId } from './src/squirrel.js';
 import { closeAction, offlineResult } from './src/quit.js';
 import { panelOnActivation } from './src/panel-activation.js';
-import { cleanMailBody, okMailId } from './src/mail-connect.js';
+import { cleanMailBody, cleanMailFilter, okMailId } from './src/mail-connect.js';
 import { CALDAV_CARDS, cleanCalDavBody, okCalDavId } from './src/caldav-calendar.js';
 
 // 윈도우 Squirrel 설치기가 --squirrel-* 로 띄운 실행이면 바로 가기만 고치고 끝낸다(맨 아래 시작 부분에서 갈린다)
@@ -1543,6 +1543,19 @@ function setupIPC() {
     }
     if (r.data?.error) return { ok: false, error: String(r.data.error) };
     return { ok: false, error: r.status ? t('main.err_remove_status', { status: r.status }) : t('main.err_unreachable', { who: who() }) };
+  });
+  // 메일 계정 하나의 읽을 폴더·검색 조건 바꾸기: 데몬이 저장하고 그 설정으로 바로 다시 가져온다
+  ipcMain.handle('mail-filter', async (e, id, raw) => {
+    const body = fromOurs(e) && okMailId(id) ? cleanMailFilter(raw) : null;
+    if (!body) return denied();
+    if (!connected) return { ok: false, error: t('main.err_offline', { who: who() }) };
+    const r = await request('PUT', `/connectors/mail/${id}`, body);
+    if (r.ok && r.data?.ok) {
+      sendPanel('dashboard', {});
+      return { ok: true, account: String(r.data.account ?? ''), ...(r.data.mailbox ? { mailbox: r.data.mailbox } : {}), ...(r.data.search ? { search: r.data.search } : {}) };
+    }
+    if (r.data?.error) return { ok: false, error: String(r.data.error) };
+    return { ok: false, error: r.status ? `${t('main.err_save')}(${r.status}).` : t('main.err_unreachable', { who: who() }) };
   });
   // 네이버·iCloud 캘린더(CalDAV, 애플리케이션 비밀번호 · 앱 암호): 데몬이 로그인해 캘린더 목록을 찾아 보고, 되면 config.json 에 저장한다(캘린더는 전부 켬). 비밀번호는 여기서 기록하지 않는다.
   // 렌더러가 보낸 본문은 모양만 맞는 것만(cleanCalDavBody, 아이디 길이는 max: Apple ID 이메일은 254자까지) 그 서비스의 데몬 경로(CALDAV_CARDS[kind].path)로

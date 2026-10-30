@@ -33,7 +33,7 @@ import { openSpec } from "./plat.ts";
 import { CalendarSync, alertDetail, alertVars, probeIcs } from "./calendar-sync.ts";
 import { withCalendarSync } from "./calendar-state.ts";
 import { MailSync, withMailSync } from "./mail-sync.ts";
-import { connectMail, removeMailAccount } from "./mail-connect.ts";
+import { connectMail, removeMailAccount, updateMailFilter } from "./mail-connect.ts";
 import { addCalendar, calendarCardRows, calendarList as calendarListOf } from "./calendar-connect.ts";
 import { connectCalDavCalendar, removeCalDavAccount, type CalDavConnectDeps } from "./calendar-caldav.ts";
 import { calendarPick } from "./manual-projects.ts";
@@ -464,6 +464,17 @@ await bus.listen(cfg.port, {
       cfg.connectors.mail = conn as typeof cfg.connectors.mail;
       mailSync.setConnector(conn);
       console.log(`[connectors] 메일 계정 하나 뺌(남은 계정 ${conn.mode === "imap" ? conn.accounts.length : 0}개)`);
+      pushStatus();
+      bus.dashboardChanged();
+    },
+  }),
+  // 메일 계정 하나의 읽을 폴더·검색 조건 바꾸기: 저장 → 그 설정으로 바로 다시 가져온다
+  mailFilter: (id, body) => updateMailFilter(id, body, {
+    path: join(HOME_DIR, "config.json"),
+    apply: (conn) => {
+      cfg.connectors.mail = conn;
+      mailSync.setConnector(conn);
+      console.log("[connectors] 메일 계정 폴더·검색 바꿈"); // 주소·검색 조건은 남기지 않는다
       pushStatus();
       bus.dashboardChanged();
     },

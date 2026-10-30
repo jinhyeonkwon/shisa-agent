@@ -160,6 +160,8 @@ export type BusHandlers = {
   calendarEvents?: (range: { from: string; to: string; fresh: boolean }) => Promise<unknown>;
   // 메일 계정 하나 빼기(비밀번호·가져온 메일까지). DELETE /connectors/mail/:id. 마지막 계정이면 메일 연결이 꺼진다
   mailRemove?: (id: string) => { ok: true; [k: string]: unknown } | { ok: false; status: number; error: string };
+  // 메일 계정 하나의 읽을 폴더·검색 조건 바꾸기(로그인 시험 없이 저장 → 다시 가져오기). PUT /connectors/mail/:id { mailbox?, search? }
+  mailFilter?: (id: string, body: unknown) => { ok: true; [k: string]: unknown } | { ok: false; status: number; error: string };
   // 행동 지침(guidelines.ts): GET/POST /guidelines · GET/PUT/DELETE /guidelines/:id. 없으면 503
   guidelines?: GuidelinesApi;
   // 집중하기(focus.ts): GET /focus · GET /focus/stats?from&to · POST /focus/start|pause|resume|stop. 없으면 503
@@ -631,6 +633,12 @@ export class Bus {
       if (req.headers["x-cy-agent"] !== "1" || (req.headers.origin && !req.headers.origin.startsWith("file://"))) return json(res, 403, { error: "forbidden" });
       if (!h.mailRemove) return json(res, 503, { error: "mail remove unavailable" });
       const r = h.mailRemove(mr[1]);
+      return r.ok ? json(res, 200, r) : json(res, r.status, { error: r.error });
+    }
+    if (mr && req.method === "PUT") {
+      if (req.headers["x-cy-agent"] !== "1" || (req.headers.origin && !req.headers.origin.startsWith("file://"))) return json(res, 403, { error: "forbidden" });
+      if (!h.mailFilter) return json(res, 503, { error: "mail filter unavailable" });
+      const r = h.mailFilter(mr[1], await readJson(req));
       return r.ok ? json(res, 200, r) : json(res, r.status, { error: r.error });
     }
     if (req.method === "PUT" && url.pathname === "/settings") {

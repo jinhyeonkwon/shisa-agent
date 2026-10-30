@@ -98,9 +98,11 @@ export type CalendarApiConn = { cap: "calendar"; mode: "api"; calendars: Calenda
 // 메일 IMAP: 계정 여러 개(accounts). password 는 비밀(설정 응답·로그·도움 보내기에 내보내지 않는다).
 // sinceHours: 몇 시간 전까지 받은 메일을 읽나(기본 24, 모든 계정 같이). skipPromotions: Gmail 이면 프로모션·소셜 탭을 서버 검색(X-GM-RAW)에서 뺀다(기본 켬)
 // id: 계정마다 고정 이름(설정에 없으면 주소로 만든다 — 예전 한 계정 모양도 같은 id). 같은 주소는 한 번만
+// mailbox: 읽을 폴더(문자열 또는 배열, 없으면 INBOX). search: imapflow 검색 객체(허용 키만 쓴다 — mail-imap.ts)
 export type MailImapAccount = {
   id: string; preset: MailPresetId | "custom"; host: string; port: number; secure: boolean;
   user: string; login?: string; password?: string; // login: 서버 로그인 이름(비면 user)
+  mailbox?: string | string[]; search?: Record<string, unknown>;
 };
 export type MailImapConn = { cap: "mail"; mode: "imap"; accounts: MailImapAccount[]; sinceHours: number; skipPromotions: boolean };
 // 가져오기 하나(계정 하나 + 같이 쓰는 기간·거르기)
@@ -232,12 +234,24 @@ export function mailImapAccount(c: Record<string, any>, envPassword?: string): M
   // Gmail 앱 비밀번호는 4글자씩 띄어 보여 준다 — 띄어쓰기를 빼고 쓴다. 다른 서비스 비밀번호는 앞뒤 공백만
   const clean = (v: string | undefined) => (v === undefined ? undefined : presetName === "gmail" ? v.replace(/\s+/g, "") : v.trim());
   const password = clean(pw(envPassword) ?? pw(c?.password));
+  const mailbox = mailboxOf(c?.mailbox);
+  const search = c?.search && typeof c.search === "object" && !Array.isArray(c.search) ? (c.search as Record<string, unknown>) : undefined;
   return {
     id: okAccountId(c?.id) ? c.id : mailAccountId(user),
     preset: presetName as MailImapAccount["preset"], host, port, secure, user,
     ...(str(c?.login) ? { login: str(c?.login) } : {}), // 로그인 이름이 주소와 다를 때(네이버·다음은 아이디만 받기도 한다)
     ...(password ? { password } : {}),
+    ...(mailbox ? { mailbox } : {}),
+    ...(search ? { search } : {}),
   };
+}
+
+// 폴더 설정 → 문자열 하나 또는 배열(빈 이름·같은 이름은 뺀다). 쓸 게 없으면 undefined(INBOX)
+function mailboxOf(v: unknown): string | string[] | undefined {
+  if (typeof v === "string") return v.trim() || undefined;
+  if (!Array.isArray(v)) return undefined;
+  const list = [...new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean))];
+  return list.length ? list : undefined;
 }
 
 // connectors.mail(mode imap) → 연결(계정 여러 개). 계정 수 상한 없음. 틀린 계정은 빼고, 같은 주소는 앞의 것만.
@@ -307,7 +321,8 @@ export function slackIngestMode(c: Connectors = CONNECTORS): "api" | null {
 
 // server: mcp 모드일 때 Claude Code 에 등록한 서버 이름([연결 해제] 뒤 `claude mcp remove <이름>` 안내에 쓴다)
 // account·preset: imap 메일이면 첫 계정의 주소와 서비스(gmail·naver·daum·custom). accounts: 계정 전부(id·주소·서비스·비밀번호 있나). 비밀번호는 넣지 않는다
-export type MailAccountStatus = { id: string; user: string; preset: string; ready: boolean };
+// mailbox·search: 그 계정의 읽을 폴더·검색 조건(설정에 있을 때만, 패널 메일 카드에서 고친다)
+export type MailAccountStatus = { id: string; user: string; preset: string; ready: boolean; mailbox?: string | string[]; search?: Record<string, unknown> };
 // calendars: ICS 캘린더면 캘린더마다 id·별칭·켜짐(주소는 넣지 않는다)
 export type CalendarStatusItem = { id: string; name: string; enabled: boolean };
 export type ConnectorStatus = { cap: Capability; label: string; mode: Mode; ready: boolean; detail: string; doc: string; server?: string; account?: string; preset?: string; accounts?: MailAccountStatus[]; calendars?: CalendarStatusItem[] };
@@ -325,7 +340,7 @@ export function connectorStatus(c: Connectors = CONNECTORS, has: (server: string
         const name = (a: MailImapAccount) => (a.preset === "custom" ? a.host : MAIL_PRESETS[a.preset].label);
         const who = {
           account: first.user, preset: first.preset,
-          accounts: x.accounts.map((a) => ({ id: a.id, user: a.user, preset: a.preset, ready: !!a.password })),
+          accounts: x.accounts.map((a) => ({ id: a.id, user: a.user, preset: a.preset, ready: !!a.password, ...(a.mailbox ? { mailbox: a.mailbox } : {}), ...(a.search ? { search: a.search } : {}) })),
         };
         if (!ready.length) return { ...base, ...who, ready: false, detail: t("status.mail_no_password") };
         const detail = x.accounts.length === 1 ? t("status.mail_one", { name: name(first), user: first.user }) : t("status.mail_accounts", { n: x.accounts.length });

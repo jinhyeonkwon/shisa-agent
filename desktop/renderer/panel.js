@@ -8,7 +8,7 @@ import { needsSetup, stepForCap } from '../src/setup.js';
 import { isFeature, isAgent, buildWalk, agentSteps } from '../src/setup-flow.js';
 import { renderSetup, clearApiDraft, readSlot, clearMailDraft, clearCalDavDraft, resetCalendarEditor } from './setup-view.js';
 import { CALDAV_CARDS } from '../src/caldav-calendar.js';
-import { mailConnected, mailConnectedText, withMailAccount, withoutMailAccount } from '../src/mail-connect.js';
+import { mailConnected, mailConnectedText, withMailAccount, withoutMailAccount, withMailFilter } from '../src/mail-connect.js';
 import { mountModels } from './models-view.js';
 import { createFocusView } from './focus-view.js';
 import { createProjectsView } from './projects-view.js';
@@ -855,6 +855,18 @@ function renderSetupView(resetScroll) {
           loadSoon();
         } else setupMail = { busy: setupMail.busy, result: setupMail.busy ? null : { ok: false, text: r?.error || tr('panel.mail_remove_failed') } };
         redraw(false);
+        return r;
+      },
+      // 계정 하나의 읽을 폴더·검색 조건: 데몬이 저장하고 바로 다시 가져온다(실패 이유는 그 계정 칸 아래에)
+      onFilter: async (id, body) => {
+        let r;
+        try { r = await cy.mailFilter(id, body); } catch { r = { ok: false, error: tr('panel.mail_filter_failed') }; }
+        if (r?.ok) {
+          setupMail = { busy: setupMail.busy, result: setupMail.busy ? null : { ok: true, text: tr('panel.mail_filter_saved', { account: r.account }) } };
+          vm = { ...vm, connectors: withMailFilter(vm.connectors, id, r) };
+          loadSoon();
+          redraw(false);
+        }
         return r;
       },
       onDisconnect: async () => {

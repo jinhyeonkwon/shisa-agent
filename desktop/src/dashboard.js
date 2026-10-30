@@ -188,14 +188,16 @@ function shapeCardCalendars(list) {
 
 const MAIL_ID = /^[\w-]{1,64}$/;
 const MAIL_ADDR = /^[^\s@]{1,200}@[^\s@]{1,200}$/;
-// 메일 계정 목록(데몬 connectorStatus accounts): id·주소·서비스·비밀번호 있나. 모양이 틀린 것·같은 id 는 건너뛴다
+// 메일 계정 목록(데몬 connectorStatus accounts): id·주소·서비스·비밀번호 있나 · 읽을 폴더(mailbox)·검색 조건(search, 있을 때만). 모양이 틀린 것·같은 id 는 건너뛴다
 function shapeMailAccounts(list) {
   const seen = new Set();
   const out = [];
   for (const a of arr(list)) {
     if (!a || typeof a !== 'object' || !MAIL_ID.test(str(a.id)) || !MAIL_ADDR.test(str(a.user)) || seen.has(a.id)) continue;
     seen.add(a.id);
-    out.push({ id: a.id, user: a.user, preset: /^(gmail|naver|daum|custom)$/.test(str(a.preset)) ? a.preset : 'custom', ready: a.ready === true });
+    const box = typeof a.mailbox === 'string' && a.mailbox ? a.mailbox : Array.isArray(a.mailbox) && a.mailbox.length && a.mailbox.every((x) => typeof x === 'string') ? a.mailbox : undefined;
+    const search = a.search && typeof a.search === 'object' && !Array.isArray(a.search) ? a.search : undefined;
+    out.push({ id: a.id, user: a.user, preset: /^(gmail|naver|daum|custom)$/.test(str(a.preset)) ? a.preset : 'custom', ready: a.ready === true, ...(box ? { mailbox: box } : {}), ...(search ? { search } : {}) });
   }
   return out;
 }

@@ -150,6 +150,8 @@ export default {
     mail_remove_failed_later: '빼지 못했어요. 잠시 뒤에 다시 해 주세요.',
     mail_removed: '**{account} 계정을 뺐어요.**',
     mail_remove_failed: '빼지 못했어요.',
+    mail_filter_saved: '**{account} 메일함·검색을 저장했어요.** 바로 다시 가져와요.',
+    mail_filter_failed: '저장하지 못했어요. 잠시 뒤에 다시 해 주세요.',
     // 프로젝트 탭(코드 작업에서 모은 것)
     hide_failed: '숨기기 실패: {why}',
     unhide_failed: '다시 보이기 실패: {why}',
@@ -673,6 +675,8 @@ export default {
     mail_remove_failed_later: '外せませんでした。少ししてからもう一度お試しください。',
     mail_removed: '**{account} のアカウントを外しました。**',
     mail_remove_failed: '外せませんでした。',
+    mail_filter_saved: '**{account} のメールボックス・検索を保存しました。**すぐに取得し直します。',
+    mail_filter_failed: '保存できませんでした。少ししてからもう一度お試しください。',
     // 프로젝트 탭(코드 작업에서 모은 것)
     hide_failed: '非表示にできませんでした: {why}',
     unhide_failed: '再表示できませんでした: {why}',

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Store } from "./store.ts";
 import { loadConfig } from "./config.ts";
 import { connectorStatus, mailAccountId, mailImapConn, resolveConnectors, type Conn, type MailImapConn, type MailTarget } from "./connectors.ts";
-import { connectMail, removeMailAccount } from "./mail-connect.ts";
+import { connectMail, removeMailAccount, updateMailFilter } from "./mail-connect.ts";
 import { MailSync, mailContext, mailSummaryLine, readMailItems, readMailState, withMailSync } from "./mail-sync.ts";
 import type { MailFetchResult, MailItem } from "./mail-imap.ts";
 import { buildContext } from "./brain.ts";
@@ -63,6 +63,23 @@ test("예전 한 계정 모양: 읽을 때 accounts 하나로(id 는 주소로) 
     ],
     sinceHours: 48,
   });
+});
+
+test("폴더(mailbox)·검색(search): 계정마다 읽고, 같은 주소로 다시 연결해도·다른 계정을 빼도 파일에서 사라지지 않는다", async () => {
+  const path = join(tmp(), "config.json");
+  const acc = { preset: "naver", user: "a@naver.com", password: "pw-1", mailbox: ["INBOX", "Work"], search: { unseen: true } };
+  writeFileSync(path, JSON.stringify({ connectors: { mail: { mode: "imap", accounts: [acc, { preset: "daum", user: "b@daum.net", password: "pw-b" }] } } }));
+  const c = resolveConnectors({}, readJson(path)).mail as MailImapConn;
+  assert.deepEqual([c.accounts[0].mailbox, c.accounts[0].search], [["INBOX", "Work"], { unseen: true }]);
+  let tested: MailTarget | undefined;
+  const r = await connectMail({ preset: "naver", user: "a@naver.com", password: "pw-2" }, { path, current: () => c, env: {}, fetch: async (t) => { tested = t; return { ok: true, items: [], filtered: false }; }, apply: () => {} });
+  assert.ok(r.ok && r.updated);
+  assert.deepEqual([tested?.mailbox, tested?.search], [["INBOX", "Work"], { unseen: true }], "시험 로그인도 그 폴더·검색으로");
+  let saved = readJson(path).connectors.mail.accounts[0];
+  assert.deepEqual([saved.password, saved.mailbox, saved.search], ["pw-2", ["INBOX", "Work"], { unseen: true }]);
+  assert.ok(removeMailAccount(mailAccountId("b@daum.net"), { path, env: {}, apply: () => {} }).ok);
+  saved = readJson(path).connectors.mail.accounts[0];
+  assert.deepEqual([saved.mailbox, saved.search], [["INBOX", "Work"], { unseen: true }]);
 });
 
 // ── 추가 · 같은 주소 · 빼기 ─────────────────────────────
@@ -249,6 +266,74 @@ test("DELETE /connectors/mail/:id: 헤더 필수 · 없는 계정 404 · 빼면 
     assert.equal(ok.status, 200);
     assert.equal((await ok.json()).left, 0);
     assert.deepEqual(seen, ["m-2", "m-1"]);
+  } finally {
+    bus.close();
+  }
+});
+
+test("메일함·검색 바꾸기: 그 계정만 · 다듬어 저장 · null 이면 지움 · 틀린 모양·키는 400 · 비밀번호는 그대로", () => {
+  const path = join(tmp(), "config.json");
+  writeFileSync(path, JSON.stringify({ other: 1, connectors: { mail: { mode: "imap", accounts: [
+    { id: "a", preset: "naver", user: "a@naver.com", password: "pw-a" },
+    { id: "b", preset: "gmail", user: "b@gmail.com", password: "bbbbccccddddeeee", mailbox: "Old" },
+  ] } } }));
+  let applied: MailImapConn | undefined;
+  const deps = { path, env: {}, apply: (c: MailImapConn) => { applied = c; } };
+  const r = updateMailFilter("a", { mailbox: [" INBOX ", "Work", "INBOX", ""], search: { from: "boss@example.com", or: [{ seen: false }, { flagged: true }] } }, deps);
+  assert.deepEqual(r, { ok: true, id: "a", account: "a@naver.com", mailbox: ["INBOX", "Work"], search: { from: "boss@example.com", or: [{ seen: false }, { flagged: true }] } });
+  let f = readJson(path);
+  assert.equal(f.other, 1);
+  assert.deepEqual(f.connectors.mail.accounts[0], { id: "a", preset: "naver", user: "a@naver.com", password: "pw-a", mailbox: ["INBOX", "Work"], search: { from: "boss@example.com", or: [{ seen: false }, { flagged: true }] } });
+  assert.equal(f.connectors.mail.accounts[1].mailbox, "Old", "다른 계정은 그대로");
+  assert.deepEqual(applied?.accounts[0].mailbox, ["INBOX", "Work"]);
+  // 빠진 키는 그대로, null 이면 지운다
+  assert.ok(updateMailFilter("a", { search: null }, deps).ok);
+  f = readJson(path);
+  assert.deepEqual(f.connectors.mail.accounts[0].mailbox, ["INBOX", "Work"]);
+  assert.equal(f.connectors.mail.accounts[0].search, undefined);
+  assert.ok(updateMailFilter("b", { mailbox: null }, deps).ok);
+  assert.equal(readJson(path).connectors.mail.accounts[1].mailbox, undefined);
+  // 틀린 것은 아무것도 바꾸지 않는다
+  const before = readFileSync(path, "utf8");
+  const no = () => assert.fail();
+  assert.equal((updateMailFilter("a", { search: { since: "2020-01-01" } }, { ...deps, apply: no }) as any).status, 400);
+  assert.match((updateMailFilter("a", { search: { not: { nope: 1 } } }, { ...deps, apply: no }) as any).error, /nope/);
+  assert.equal((updateMailFilter("a", { search: ["x"] }, { ...deps, apply: no }) as any).status, 400);
+  assert.equal((updateMailFilter("a", { mailbox: 3 }, { ...deps, apply: no }) as any).status, 400);
+  assert.equal((updateMailFilter("a", { password: "x" }, { ...deps, apply: no }) as any).status, 400);
+  assert.equal((updateMailFilter("../x", {}, { ...deps, apply: no }) as any).status, 400);
+  assert.equal((updateMailFilter("m-nope", { mailbox: "X" }, { ...deps, apply: no }) as any).status, 404);
+  assert.equal(readFileSync(path, "utf8"), before);
+});
+
+test("연결 상태: 계정에 mailbox·search 가 있을 때만 붙는다(비밀번호는 없음)", () => {
+  const c = mailImapConn({ accounts: [
+    { preset: "gmail", user: "me@gmail.com", password: "aaaabbbbccccdddd", mailbox: ["INBOX", "Work"], search: { gmraw: "is:unread" } },
+    { preset: "naver", user: "me@naver.com", password: "Naver-Secret-9" },
+  ] }, {}) as MailImapConn;
+  const st = connectorStatus({ ...resolveConnectors({}, {}), mail: c }, () => false).find((x) => x.cap === "mail")!;
+  assert.deepEqual(st.accounts![0], { id: c.accounts[0].id, user: "me@gmail.com", preset: "gmail", ready: true, mailbox: ["INBOX", "Work"], search: { gmraw: "is:unread" } });
+  assert.deepEqual(Object.keys(st.accounts![1]).sort(), ["id", "preset", "ready", "user"]);
+  assert.doesNotMatch(JSON.stringify(st), /aaaabbbb|Naver-Secret/);
+});
+
+test("PUT /connectors/mail/:id: 헤더 필수 · 본문을 넘기고 결과 그대로", async () => {
+  const { Bus } = await import("./bus.ts");
+  const bus = new Bus();
+  const seen: unknown[] = [];
+  await bus.listen(0, {
+    approve: async () => "", hold: async () => "", briefing: async () => "", dashboard: async () => ({}), todoDone: () => true, chat: () => "c", chatHistory: () => [],
+    mailFilter: (id, body) => { seen.push([id, body]); return id === "m-1" ? { ok: true, id, account: "a@naver.com", mailbox: "Work" } : { ok: false, status: 404, error: "없음" }; },
+  });
+  const base = `http://127.0.0.1:${(bus.server!.address() as any).port}`;
+  const put = (id: string, body: unknown, h: Record<string, string> = { "x-cy-agent": "1" }) => fetch(`${base}/connectors/mail/${id}`, { method: "PUT", headers: { ...h, "content-type": "application/json" }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await put("m-1", { mailbox: "Work" }, {})).status, 403);
+    assert.equal((await put("m-2", {})).status, 404);
+    const ok = await put("m-1", { mailbox: "Work" });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).mailbox, "Work");
+    assert.deepEqual(seen, [["m-2", {}], ["m-1", { mailbox: "Work" }]]);
   } finally {
     bus.close();
   }

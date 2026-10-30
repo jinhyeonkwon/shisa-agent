@@ -9,7 +9,7 @@ import { HUB_CAP, connectorDisconnectCopy, disconnectControl } from '../src/disc
 import { calendarCardSummary, calendarRowState } from '../src/calendars.js';
 import { CALDAV_CARDS, CALDAV_KINDS, calDavBody, calDavAccounts } from '../src/caldav-calendar.js';
 import { createCalendarEditor } from '../src/calendar-editor.js';
-import { MAIL_SERVICES, MAIL_CHECK, MAIL_TITLE, MAIL_BLURB, MAIL_ADVANCED, MAIL_NO_AI, MAIL_ADD_MORE, mailService, guessService, mailFormCheck, mailConnectBody, mailAccountState, mailRemoveCopy } from '../src/mail-connect.js';
+import { MAIL_SERVICES, MAIL_CHECK, MAIL_TITLE, MAIL_BLURB, MAIL_ADVANCED, MAIL_NO_AI, MAIL_ADD_MORE, mailService, guessService, mailFormCheck, mailConnectBody, mailAccountState, mailRemoveCopy, mailFilterText, mailFilterSummary, mailFilterBody } from '../src/mail-connect.js';
 
 const slotValues = new Map();
 let redraw = null;
@@ -400,19 +400,61 @@ export function clearMailDraft() {
   Object.assign(mailDraft, { service: 'gmail', user: '', password: '', host: '', port: '', picked: false });
   mailAddOpen = false;
 }
-function mailAccountsList(accounts, onRemove) {
+// 계정마다 [메일함·검색]: 펼치면 읽을 폴더(쉼표로 여러 개) · 검색 조건(JSON) 칸과 [저장]. 쓰다 만 칸은 이 화면 메모리에만(한 계정씩)
+const mailFilterDraft = { id: '', mailbox: '', search: '', why: '', busy: false };
+function mailFilterForm(a, onFilter) {
+  const d = mailFilterDraft;
+  const box = h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'INBOX, Work', 'aria-label': t('setup.mail_filter_box'), value: d.mailbox, dataset: { slot: `mail-box-${a.id}` } });
+  box.addEventListener('input', () => { d.mailbox = box.value; });
+  const search = h('textarea', { rows: '2', autocomplete: 'off', spellcheck: 'false', placeholder: a.preset === 'gmail' ? '{ "gmraw": "label:Work is:unread" }' : '{ "from": "boss@example.com" }', 'aria-label': t('setup.mail_filter_search') });
+  search.value = d.search;
+  search.addEventListener('input', () => { d.search = search.value; });
+  const save = h('button.primary', { type: 'button', text: d.busy ? t('setup.mail_filter_saving') : t('setup.mail_filter_save'), disabled: d.busy, dataset: { act: 'mail-filter-save' } });
+  save.addEventListener('click', async () => {
+    const r = mailFilterBody(d);
+    if (!r.body) { d.why = r.why; redraw?.(); return; }
+    d.busy = true; d.why = '';
+    redraw?.();
+    const res = await onFilter(a.id, r.body);
+    d.busy = false;
+    if (res?.ok) d.id = ''; else d.why = res?.error || t('setup.mail_filter_failed');
+    redraw?.();
+  });
+  return h('div.setup-mail-form.setup-mail-filter', null,
+    h('div.setup-fields', null,
+      h('label', null, h('span', { text: t('setup.mail_filter_box') }), box),
+      h('label', null, h('span', { text: t('setup.mail_filter_search') }), search)),
+    h('small.setup-mail-note', { text: a.preset === 'gmail' ? `${t('setup.mail_filter_note')} ${t('setup.mail_filter_note_gmail')}` : t('setup.mail_filter_note') }),
+    d.why ? h('p.setup-gate', null, ...richNodes(d.why)) : null,
+    h('div.setup-fields.row', null, h('span.spacer'), save));
+}
+function mailAccountsList(accounts, onRemove, onFilter) {
   const last = accounts.length === 1;
-  return h('ul.setup-repos.setup-mail-accounts', null, accounts.map((a) => h(`li${a.phase === 'failed' || !a.ready ? '.fail' : ''}`, { dataset: { id: a.id } },
-    h('span.cal-kind', { text: mailService(a.preset).title }),
-    h('code', { text: a.user }),
-    h(`span.setup-mail-acct${a.phase === 'failed' || !a.ready ? '.fail' : ''}`, { text: mailAccountState(a) }),
-    onRemove && a.id ? disconnectControl(document, {
-      ...mailRemoveCopy(a, last),
-      open: mailRemoving === a.id,
-      onOpen: () => { mailRemoving = a.id; },
-      onClose: () => { if (mailRemoving === a.id) mailRemoving = ''; },
-      onConfirm: () => onRemove(a.id),
-    }) : null)));
+  return h('ul.setup-repos.setup-mail-accounts', null, accounts.map((a) => {
+    const editing = onFilter && a.id && mailFilterDraft.id === a.id;
+    const sum = mailFilterSummary(a);
+    return h(`li${a.phase === 'failed' || !a.ready ? '.fail' : ''}`, { dataset: { id: a.id } },
+      h('span.cal-kind', { text: mailService(a.preset).title }),
+      h('code', { text: a.user }),
+      h(`span.setup-mail-acct${a.phase === 'failed' || !a.ready ? '.fail' : ''}`, { text: mailAccountState(a) }),
+      onFilter && a.id ? h('button.ghost.setup-mail-filter-toggle', {
+        type: 'button', text: t('setup.mail_filter_toggle'), 'aria-expanded': editing ? 'true' : 'false',
+        onclick: () => {
+          if (editing) mailFilterDraft.id = '';
+          else Object.assign(mailFilterDraft, { id: a.id, ...mailFilterText(a), why: '', busy: false });
+          redraw?.();
+        },
+      }) : null,
+      onRemove && a.id ? disconnectControl(document, {
+        ...mailRemoveCopy(a, last),
+        open: mailRemoving === a.id,
+        onOpen: () => { mailRemoving = a.id; },
+        onClose: () => { if (mailRemoving === a.id) mailRemoving = ''; },
+        onConfirm: () => onRemove(a.id),
+      }) : null,
+      sum && !editing ? h('small.setup-mail-acct.setup-mail-filter-sum', { text: sum }) : null,
+      editing ? mailFilterForm(a, onFilter) : null);
+  }));
 }
 function mailForm({ busy, result, onConnect, onOpen }) {
   const kids = [];
@@ -465,13 +507,13 @@ function mailForm({ busy, result, onConnect, onOpen }) {
   kids.push(h('div.setup-fields.row', null, h('span.spacer'), connect));
   return h('div.setup-mail-form', null, ...kids);
 }
-function mailBlock({ mail, busy, result, noAi, onConnect, onDisconnect, onRemove, onOpen }) {
+function mailBlock({ mail, busy, result, noAi, onConnect, onDisconnect, onRemove, onFilter, onOpen }) {
   const box = h('div.setup-folder.setup-mail', { dataset: { id: 'mail' } });
   const accounts = mail?.accounts ?? [];
   const title = h('span.setup-pick-title', { text: accounts.length ? t('setup.view_title_text', { MAIL_TITLE, length: accounts.length }) : MAIL_TITLE });
   const kids = [title, h('p.setup-blurb', { text: MAIL_BLURB })];
   if (accounts.length) {
-    kids.push(mailAccountsList(accounts, onRemove));
+    kids.push(mailAccountsList(accounts, onRemove, onFilter));
     if (noAi) kids.push(h('p.setup-blurb', { text: MAIL_NO_AI }));
   }
   if (result?.ok) kids.push(h('p.setup-gate.ok', null, ...richNodes(result.text)));

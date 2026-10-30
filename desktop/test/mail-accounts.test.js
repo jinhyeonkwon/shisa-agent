@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mailConnected, mailStatusText, mailAccountState, withMailAccount, withoutMailAccount, mailRemoveCopy, mailConnectedText, okMailId } from '../src/mail-connect.js';
+import { mailConnected, mailStatusText, mailAccountState, withMailAccount, withoutMailAccount, mailRemoveCopy, mailConnectedText, okMailId, mailFilterText, mailFilterSummary, mailFilterBody, cleanMailFilter, withMailFilter } from '../src/mail-connect.js';
 import { shapeConnectors, connectorChipView } from '../src/dashboard.js';
 import { redact } from '../src/debug-share.js';
 
@@ -151,6 +151,83 @@ test('화면 연결: 패널·프리로드·main 이 계정 빼기를 데몬(DELE
   assert.match(main, /ipcMain\.handle\('mail-remove'/);
   assert.match(main, /okMailId\(id\)/);
   assert.match(main, /request\('DELETE', `\/connectors\/mail\/\$\{id\}`\)/);
+});
+
+test('메일함·검색: 편집 칸 글 · 요약 · 보낼 본문(빈칸은 null) · main 이 받는 모양 · 패널 목록에 바로', () => {
+  const a = { id: 'm-g', mailbox: ['INBOX', 'Work'], search: { from: 'boss@example.com' } };
+  assert.deepEqual(mailFilterText(a), { mailbox: 'INBOX, Work', search: '{"from":"boss@example.com"}' });
+  assert.deepEqual(mailFilterText({ id: 'x' }), { mailbox: '', search: '' });
+  assert.equal(mailFilterSummary(a), '메일함 INBOX, Work · 검색 {"from":"boss@example.com"}');
+  assert.equal(mailFilterSummary({ id: 'x' }), '');
+  assert.deepEqual(mailFilterBody({ mailbox: ' INBOX , Work,INBOX,', search: ' {"seen": false} ' }), { body: { mailbox: ['INBOX', 'Work'], search: { seen: false } } });
+  assert.deepEqual(mailFilterBody({ mailbox: 'Work', search: '' }), { body: { mailbox: 'Work', search: null } });
+  assert.deepEqual(mailFilterBody({}), { body: { mailbox: null, search: null } });
+  assert.match(mailFilterBody({ search: '{from:' }).why, /JSON 객체/);
+  assert.match(mailFilterBody({ search: '["x"]' }).why, /JSON 객체/);
+  assert.deepEqual(cleanMailFilter({ mailbox: ['A'], search: null }), { mailbox: ['A'], search: null });
+  assert.deepEqual(cleanMailFilter({}), {});
+  assert.equal(cleanMailFilter({ mailbox: 3 }), null);
+  assert.equal(cleanMailFilter({ search: [] }), null);
+  assert.equal(cleanMailFilter(null), null);
+  // 대시보드 모양을 지나도 남고, 저장한 값으로 바로 바뀐다
+  const raw = [{ ...RAW[0], accounts: [{ ...RAW[0].accounts[0], mailbox: 'Work', search: { seen: false } }, RAW[0].accounts[1]] }];
+  const shaped = shapeConnectors(raw);
+  assert.deepEqual(mailConnected(shaped).accounts[0].mailbox, 'Work');
+  assert.deepEqual(mailConnected(shaped).accounts[0].search, { seen: false });
+  const next = mailConnected(withMailFilter(shaped, 'm-g', { ok: true, mailbox: ['INBOX', 'X'] })).accounts;
+  assert.deepEqual(next[0].mailbox, ['INBOX', 'X']);
+  assert.equal(next[0].search, undefined);
+  assert.equal(next[1].mailbox, undefined);
+  // 비밀번호를 바꿔 다시 연결해도 패널 줄의 폴더·검색은 그대로
+  assert.equal(mailConnected(withMailAccount(shaped, { id: 'm-g', account: 'me@gmail.com', preset: 'gmail', count: 1 })).accounts[0].mailbox, 'Work');
+});
+
+test('화면: 계정 줄 [메일함·검색] → 지금 값으로 칸 채움 → 저장(본문) · 틀린 JSON 은 보내지 않고 이유', async () => {
+  globalThis.document = { createElement: (t) => new Node(t), createTextNode: (t) => { const n = new Node('#text'); n.textContent = t; return n; }, title: '' };
+  const { renderSetup, clearMailDraft } = await import('../renderer/setup-view.js');
+  clearMailDraft();
+  const root = new Node('div');
+  const saved = [];
+  const raw = [{ ...RAW[0], accounts: [{ ...RAW[0].accounts[0], mailbox: ['INBOX', 'Work'] }, RAW[0].accounts[1]] }];
+  const mail = { mail: mailConnected(shapeConnectors(raw)), busy: false, result: null, noAi: false, onOpen: () => {}, onConnect: () => {}, onRemove: async () => ({ ok: true }), onFilter: async (id, body) => { saved.push([id, body]); return { ok: true }; }, onDisconnect: async () => ({ ok: true }) };
+  const state = { phase: 'extras', done: {}, repos: [], calendars: [], mail };
+  const draw = () => renderSetup(root, state);
+  draw();
+  const row = () => root.byClass('setup-mail-accounts')[0].children[0];
+  assert.match(row().text, /메일함 INBOX, Work/);
+  row().byClass('setup-mail-filter-toggle')[0].fire('click');
+  draw();
+  const box = row().all((n) => n.attrs['aria-label'] === '메일함')[0];
+  const search = row().all((n) => n.attrs['aria-label'] === '검색 조건(JSON)')[0];
+  assert.equal(box.value, 'INBOX, Work');
+  assert.equal(search.value, '');
+  assert.match(row().text, /\[Gmail\]\/All Mail/, 'Gmail 이면 라벨·gmraw 안내');
+  search.value = '{ nope';
+  search.fire('input');
+  row().all((n) => n.dataset.act === 'mail-filter-save')[0].fire('click');
+  draw();
+  assert.equal(saved.length, 0);
+  assert.match(row().text, /JSON 객체/);
+  box.value = 'Work';
+  box.fire('input');
+  search.value = '{"gmraw":"is:unread"}';
+  search.fire('input');
+  row().all((n) => n.dataset.act === 'mail-filter-save')[0].fire('click');
+  await tick();
+  draw();
+  assert.deepEqual(saved, [['m-g', { mailbox: 'Work', search: { gmraw: 'is:unread' } }]]);
+  assert.equal(row().all((n) => n.attrs['aria-label'] === '메일함').length, 0, '저장되면 접는다');
+  delete globalThis.document;
+});
+
+test('화면 연결: 패널·프리로드·main 이 메일함·검색을 데몬(PUT /connectors/mail/:id)으로 보낸다', () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
+  assert.match(read('../renderer/panel.js'), /cy\.mailFilter\(id, body\)/);
+  assert.match(read('../preload-panel.cjs'), /mailFilter: .*'mail-filter'/);
+  const main = read('../main.js');
+  assert.match(main, /ipcMain\.handle\('mail-filter'/);
+  assert.match(main, /okMailId\(id\) \? cleanMailFilter\(raw\)/);
+  assert.match(main, /request\('PUT', `\/connectors\/mail\/\$\{id\}`, body\)/);
 });
 
 test('화면 안정성: 연결 확인 중 연타는 무시 · 확인 중에 계정을 빼거나 끊어도 「확인하는 중」은 그대로 · 긴 실패 이유·주소는 줄바꿈', () => {

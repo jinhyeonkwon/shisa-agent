@@ -1486,6 +1486,18 @@ button.focus-tab.on { background: var(--surface); color: var(--fg); box-shadow: 
 .setup-mail-accounts code { min-width: 0; max-width: 100%; }
 .setup-mail-acct { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .setup-mail-acct.fail { color: var(--warn-fg, #b45309); }
+/* 계정마다 메일함·검색: 요약 한 줄과 펼친 편집 칸은 줄 전체 너비로 */
+.setup-mail-filter-sum, .setup-mail-filter { flex-basis: 100%; }
+.setup-mail-filter-toggle { margin-left: auto; }
+.setup-mail-filter textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  resize: vertical;
+}
 /* 네이버 캘린더 카드: 계정마다 아이디·[빼기] 한 줄, 그 아래 캘린더 줄(체크 = 가져오기) */
 .setup-ncal-accounts { margin: 6px 0 8px; gap: 10px; }
 .setup-ncal-accounts > li { display: block; }

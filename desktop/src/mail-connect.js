@@ -169,6 +169,8 @@ export function mailConnected(connectors) {
     const r = results.find((x) => x.id === a.id) ?? (list.length === 1 && !results.length && sync ? { phase: sync.phase, count: sync.count, reason: sync.reason } : null);
     return {
       id: a.id || '', user: a.user, preset: a.preset || 'custom', ready: a.ready === true,
+      ...(a.mailbox ? { mailbox: a.mailbox } : {}),
+      ...(a.search && typeof a.search === 'object' ? { search: a.search } : {}),
       ...(r?.phase ? { phase: r.phase } : {}),
       ...(Number.isInteger(r?.count) ? { count: r.count } : {}),
       ...(r?.phase === 'failed' && r.reason ? { reason: r.reason } : {}),
@@ -226,7 +228,8 @@ export function withMailAccount(connectors, r) {
   const accounts = [...(m?.accounts ?? [])];
   const row = { id: r.id || '', user: r.account, preset: r.preset, ready: true };
   const i = accounts.findIndex((a) => a.user.toLowerCase() === String(r.account).toLowerCase() || (r.id && a.id === r.id));
-  if (i >= 0) accounts[i] = row; else accounts.push(row); // 같은 주소면 그 자리에서 바꾼다
+  // 같은 주소면 그 자리에서 바꾼다(폴더·검색은 데몬이 지키니 그대로)
+  if (i >= 0) accounts[i] = { ...row, ...(accounts[i].mailbox ? { mailbox: accounts[i].mailbox } : {}), ...(accounts[i].search ? { search: accounts[i].search } : {}) }; else accounts.push(row);
   const results = (cur?.sync?.accounts ?? []).filter((a) => a.id !== r.id).concat([{ id: r.id || '', phase: 'ok', count: r.count ?? 0 }]);
   const mail = {
     cap: 'mail', label: t('setup.mail_withoutmailaccount_label'), mode: 'imap', modeLabel: t('setup.mail_mail_modelabel'), ready: true, detail: '',
@@ -248,8 +251,63 @@ export function withoutMailAccount(connectors, id) {
   });
 }
 
-// main 이 렌더러에서 받은 계정 id 모양(데몬 DELETE /connectors/mail/:id)
+// main 이 렌더러에서 받은 계정 id 모양(데몬 DELETE·PUT /connectors/mail/:id)
 export const okMailId = (x) => typeof x === 'string' && /^[\w-]{1,64}$/.test(x);
+
+// 계정의 읽을 폴더(mailbox)·검색 조건(search) → 편집 칸 글(폴더는 쉼표로, 검색은 JSON). 없으면 빈칸(INBOX · 거르기 없음)
+export function mailFilterText(a) {
+  const box = Array.isArray(a?.mailbox) ? a.mailbox.join(', ') : typeof a?.mailbox === 'string' ? a.mailbox : '';
+  const search = a?.search && typeof a.search === 'object' && Object.keys(a.search).length ? JSON.stringify(a.search) : '';
+  return { mailbox: box, search };
+}
+
+// 계정 줄 아래 한 줄 요약(설정이 있을 때만): 「메일함 INBOX, Work · 검색 {…}」
+export function mailFilterSummary(a) {
+  const f = mailFilterText(a);
+  return [f.mailbox ? t('setup.mail_filter_sum_box', { v0: f.mailbox }) : '', f.search ? t('setup.mail_filter_sum_search', { v0: f.search }) : ''].filter(Boolean).join(' · ');
+}
+
+// 편집 칸 → 데몬(PUT /connectors/mail/:id)으로 보낼 본문 | { why }. 빈칸이면 null(지움 → INBOX · 거르기 없음)
+export function mailFilterBody(f = {}) {
+  const names = [...new Set(String(f.mailbox ?? '').split(/[,\n]/).map((x) => x.trim()).filter(Boolean))];
+  const raw = String(f.search ?? '').trim();
+  let search = null;
+  if (raw) {
+    try { search = JSON.parse(raw); } catch { return { why: t('setup.mail_filter_why_json') }; }
+    if (!search || typeof search !== 'object' || Array.isArray(search)) return { why: t('setup.mail_filter_why_json') };
+  }
+  return { body: { mailbox: names.length === 0 ? null : names.length === 1 ? names[0] : names, search } };
+}
+
+// 메인이 렌더러에서 받은 폴더·검색 본문: 모양만 맞는 것만 남긴다(null = 거절). 키 검사는 데몬이
+export function cleanMailFilter(x) {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return null;
+  const out = {};
+  const name = (v) => typeof v === 'string' && v.length <= 200;
+  if (x.mailbox !== undefined) {
+    if (x.mailbox !== null && !name(x.mailbox) && !(Array.isArray(x.mailbox) && x.mailbox.length <= 50 && x.mailbox.every(name))) return null;
+    out.mailbox = x.mailbox;
+  }
+  if (x.search !== undefined) {
+    if (x.search !== null && (typeof x.search !== 'object' || Array.isArray(x.search) || JSON.stringify(x.search).length > 4000)) return null;
+    out.search = x.search;
+  }
+  return out;
+}
+
+// 저장한 뒤 패널이 들고 있는 계정 줄에도 바로(다음 대시보드를 기다리지 않게)
+export function withMailFilter(connectors, id, r) {
+  const list = Array.isArray(connectors) ? connectors : [];
+  return list.map((c) => {
+    if (!c || c.cap !== 'mail' || c.mode !== 'imap') return c;
+    const accounts = (c.accounts ?? []).map((a) => {
+      if (a.id !== id) return a;
+      const { mailbox: _m, search: _s, ...rest } = a;
+      return { ...rest, ...(r?.mailbox ? { mailbox: r.mailbox } : {}), ...(r?.search ? { search: r.search } : {}) };
+    });
+    return { ...c, accounts };
+  });
+}
 
 // 언어가 바뀌면 위 글 상수들을 그 언어로 다시(가져다 쓰는 쪽은 살아 있는 바인딩으로 새 글을 본다)
 onLanguage(() => {

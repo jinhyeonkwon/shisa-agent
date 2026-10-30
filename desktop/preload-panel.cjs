@@ -125,6 +125,8 @@ contextBridge.exposeInMainWorld('cy', {
   mailConnect: (body) => ipcRenderer.invoke('mail-connect', body && typeof body === 'object' ? body : {}),
   // 메일 계정 하나 빼기(id) → { ok, account, left } | { ok: false, error }
   mailRemove: (id) => ipcRenderer.invoke('mail-remove', String(id || '')),
+  // 메일 계정 하나의 읽을 폴더·검색 조건 바꾸기(id, { mailbox: 이름 | 이름[] | null, search: 객체 | null }) → { ok, account, mailbox?, search? } | { ok: false, error }
+  mailFilter: (id, body) => ipcRenderer.invoke('mail-filter', String(id || ''), body && typeof body === 'object' ? body : {}),
   // 캘린더 여러 개: 목록 { ok, items: [{ id, kind, title, label, name, enabled, phase?, meetings?, reason? }] }(주소는 없음)
   // · 더하기({ name?, url }) → 데몬이 시험으로 읽고 저장 { ok, name, events, items } | { ok: false, error, duplicate? }
   // · 별칭 고치기(id, name) · 켜기/끄기(id, on) · 하나 빼기(id) → { ok, items, note?, error? }
