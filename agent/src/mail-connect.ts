@@ -72,6 +72,9 @@ export function mailConnectPlan(body: unknown, cur: Conn | undefined, env: NodeJ
   if (!password.trim()) password = same?.password ?? "";
   if (!password.trim() && !envFirst) return { error: preset === "gmail" ? tr("status.mail_need_app16") : tr("status.mail_need_pw") };
   const account: Record<string, unknown> = { id: same?.id ?? mailAccountId(user), preset, user };
+  // 다시 연결(비밀번호 바꾸기)해도 손으로 쓴 메일함·검색어는 그대로
+  if (same?.mailbox) account.mailbox = same.mailbox;
+  if (same?.search) account.search = same.search;
   if (preset === "custom") {
     if (typeof b.host !== "string" || !b.host.trim()) return { error: tr("status.mail_need_host2") };
     account.host = b.host.trim();

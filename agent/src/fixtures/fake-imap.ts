@@ -5,7 +5,7 @@
 import { createServer as netServer, type Server, type Socket } from "node:net";
 import { createServer as tlsServer } from "node:tls";
 
-export type FakeMsg = { uid: number; raw: string; internalDate: Date; flags?: string[]; labels?: string[] };
+export type FakeMsg = { uid: number; raw: string; internalDate: Date; flags?: string[]; labels?: string[]; box?: string }; // box: 들어 있는 메일함(기본 INBOX)
 export type FakeImapOpts = {
   user: string; pass: string; messages: FakeMsg[];
   gmail?: boolean;                 // X-GM-EXT-1 을 알리고 X-GM-RAW 를 받는다(-category:promotions 등은 labels 로 거른다)
@@ -129,6 +129,8 @@ export function startFakeImap(o: FakeImapOpts, port = 0): Promise<FakeImap> {
     const literals: string[] = [];
     let need = -1;                 // 받아야 할 literal 바이트
     let authed = false, selected: "ro" | "rw" | null = null;
+    let cur = "INBOX";
+    const view = () => msgs.filter((m) => (m.box ?? "INBOX") === cur);
     let stalled = false;
     const run = (line: string) => {
       if (stalled) return;
@@ -157,12 +159,17 @@ export function startFakeImap(o: FakeImapOpts, port = 0): Promise<FakeImap> {
       if (cmd === "LIST") { send(`* LIST (\\HasNoChildren) "/" "INBOX"\r\n`); return ok(); }
       if (cmd === "NAMESPACE") { send(`* NAMESPACE (("" "/")) NIL NIL\r\n`); return ok(); }
       if (cmd === "SELECT" || cmd === "EXAMINE") {
+        const name = args[0] ?? "";
+        if (name.toUpperCase() !== "INBOX" && !msgs.some((m) => m.box === name)) { selected = null; return send(`${tag} NO [NONEXISTENT] Unknown Mailbox: ${name}\r\n`); }
+        cur = name.toUpperCase() === "INBOX" ? "INBOX" : name;
+        const here = view();
         selected = cmd === "EXAMINE" && !o.readWriteExamine ? "ro" : "rw";
-        send(`* FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)\r\n* ${msgs.length} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 7] ok\r\n* OK [UIDNEXT ${Math.max(0, ...msgs.map((m) => m.uid)) + 1}] ok\r\n`);
+        send(`* FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)\r\n* ${here.length} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 7] ok\r\n* OK [UIDNEXT ${Math.max(0, ...here.map((m) => m.uid)) + 1}] ok\r\n`);
         return ok(`[${selected === "ro" ? "READ-ONLY" : "READ-WRITE"}] ${cmd} completed`);
       }
       if (!selected) return send(`${tag} BAD no mailbox\r\n`);
       if (cmd === "UID SEARCH" || cmd === "SEARCH") {
+        const msgs = view();
         let since = 0; let raw = "";
         for (let i = 0; i < args.length; i++) {
           const a = args[i].toUpperCase();
@@ -175,6 +182,7 @@ export function startFakeImap(o: FakeImapOpts, port = 0): Promise<FakeImap> {
         return ok();
       }
       if (cmd === "UID FETCH" || cmd === "FETCH") {
+        const msgs = view();
         const items = args.slice(1).join(" ").toUpperCase();
         const all = uidMode ? msgs.map((m) => m.uid) : msgs.map((_, i) => i + 1);
         for (const n of parseSet(args[0] ?? "", all)) {

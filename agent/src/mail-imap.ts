@@ -1,7 +1,7 @@
 // 메일 IMAP 읽기(읽기 전용): 메일 주소 + 앱 비밀번호로 받은편지함을 열어 최근 받은 메일의 보낸 사람·제목·날짜·본문 앞부분을 가져온다.
 //
 // 읽기 전용을 지키는 법(여기서 부르는 IMAP 명령은 LOGIN · EXAMINE · UID SEARCH · UID FETCH(BODYSTRUCTURE · BODY.PEEK) · LOGOUT 뿐):
-//   1) 받은편지함은 EXAMINE 으로 연다(mailboxOpen readOnly). 서버가 READ-ONLY 로 열지 않았다고 답하면 아무것도 읽지 않고 끝낸다
+//   1) 받은편지함(설정의 mailbox 가 있으면 그 메일함들)은 EXAMINE 으로 연다(mailboxOpen readOnly). 서버가 READ-ONLY 로 열지 않았다고 답하면 아무것도 읽지 않고 끝낸다
 //   2) 머리말·본문은 BODY.PEEK[HEADER] · BODY.PEEK[n](글 부분만) 로만 받는다 — 읽음 표시(\Seen)가 바뀌지 않는다.
 //      BODYSTRUCTURE 로 구조를 먼저 보고 text/plain·text/html 부분만 받는다. 첨부(수십 MB 일 수 있다)는 내용을 받지 않고 이름·크기만.
 //      구조를 못 주는 서버의 메일만 원문 전체(BODY.PEEK[])로 받는다
@@ -34,7 +34,7 @@ export type MailItem = {
   account?: string;      // 어느 계정으로 받았나(받는 주소). 동기화가 붙인다(mail-sync.ts)
 };
 
-export type MailFailCode = "auth" | "app-password" | "imap-off" | "web-login" | "admin" | "network" | "timeout" | "tls" | "readonly" | "config" | "unknown";
+export type MailFailCode = "auth" | "app-password" | "imap-off" | "web-login" | "admin" | "network" | "timeout" | "tls" | "readonly" | "mailbox" | "config" | "unknown";
 export type MailFetchResult = { ok: true; items: MailItem[]; filtered: boolean } | { ok: false; code: MailFailCode; reason: string; detail?: string };
 
 // 시험이 가짜 서버(로컬 TLS·평문)에 붙을 수 있게: tls(신뢰할 인증서 등)·client(가짜 ImapFlow)만 바꾼다. 설정 파일로는 못 바꾼다
@@ -51,6 +51,7 @@ export function mailFailure(err: any, c: Pick<MailTarget, "preset" | "host" | "p
   const name = svcName(c);
   const gmail = c.preset === "gmail";
   const out = (k: MailFailCode, reason: string) => ({ code: k, reason, ...(detail ? { detail } : {}) });
+  if (code === "NOMAILBOX") return out("mailbox", t("status.mail_no_box", { box: String(err?.mailbox ?? "") }));
   if (/Application-specific password|app[- ]?specific|app password/i.test(text)) {
     return out("app-password", gmail
       ? t("status.mail_google_pw")
@@ -113,77 +114,93 @@ export async function fetchRecentMail(c: MailTarget, opts: MailFetchOpts = {}): 
   let opened = false;
   try {
     await client.connect();
-    const box = await client.mailboxOpen("INBOX", { readOnly: true }); // EXAMINE
-    opened = true;
-    if (!box || box.readOnly !== true) {
-      const e: any = new Error("mailbox is not READ-ONLY"); e.code = "READONLY"; throw e;
-    }
-    const gm = MAIL_PRESETS[c.preset as keyof typeof MAIL_PRESETS]?.gmail === true || client.capabilities.has("X-GM-EXT-1");
-    const filtered = gm && c.skipPromotions && client.capabilities.has("X-GM-EXT-1");
-    // SINCE 는 날짜 단위라 하루 앞부터 찾고 받은 시각으로 다시 거른다
-    const query: Record<string, unknown> = { since: new Date(since.getTime() - 24 * 3600e3) };
-    if (filtered) query.gmraw = "-category:promotions -category:social";
-    // imapflow 는 검색이 실패하면(끊김 등) 던지지 않고 false 를 준다 — 「메일 0통」으로 덮어쓰지 않게 실패로 본다
-    const found = await client.search(query, { uid: true });
-    if (!Array.isArray(found)) { const e: any = new Error(client.usable ? "SEARCH failed" : "Connection closed during SEARCH"); e.code = client.usable ? "" : "NoConnection"; throw e; }
-    const uids = found as number[];
     const items: MailItem[] = [];
-    if (uids.length) {
-      // 1) 머리말·구조·플래그·받은 때만(BODY.PEEK[HEADER] · BODYSTRUCTURE). 첨부 내용은 받지 않는다
-      type Got = { uid: number; flags?: Set<string>; internalDate?: Date | string; headers?: Buffer; structure?: MimeNode };
-      const got: Got[] = [];
-      for await (const m of client.fetch(uids, { uid: true, flags: true, internalDate: true, headers: true, bodyStructure: true }, { uid: true })) {
-        got.push({ uid: m.uid, flags: m.flags, internalDate: m.internalDate, headers: m.headers, structure: m.bodyStructure as MimeNode | undefined });
+    const seen = new Set<string>(); // 여러 메일함(Gmail 라벨)에 같이 있는 메일은 한 번만(Message-ID)
+    let filtered = false;
+    // 메일함마다 차례로 연다(설정이 없으면 INBOX 하나)
+    for (const name of c.mailbox?.length ? c.mailbox : ["INBOX"]) {
+      let box;
+      try {
+        box = await client.mailboxOpen(name, { readOnly: true }); // EXAMINE
+      } catch (err: any) {
+        // 서버가 NO 로 답함 = 그런 메일함이 없다(이름 틀림). 끊김 등은 그대로 던진다
+        if (err?.responseStatus !== "NO" && err?.serverResponseCode !== "NONEXISTENT") throw err;
+        const e: any = new Error(`cannot open mailbox: ${err?.responseText ?? ""}`); e.code = "NOMAILBOX"; e.mailbox = name; throw e;
       }
-      // 받은 시각으로 먼저 거른다(SINCE 는 하루 앞부터라 더 온다)
-      const recent = got.filter((m) => { const at = toIso(m.internalDate); return !at || Date.parse(at) >= since.getTime(); });
-      // 2) 글 본문 부분만(BODY.PEEK[n]). 같은 부분 번호끼리 묶어 한 번에. 구조를 못 받은 메일만 원문 전체(BODY.PEEK[])
-      const parts = new Map<number, { data: Map<string, Buffer>; binary?: Set<string> }>();
-      const groups = new Map<string, number[]>();
-      // 1) 에서 안 돌아온 메일(서버·파서가 그 구조를 못 다룸)과 구조 없는 메일은 원문 전체로 — 빠뜨리지 않는다
-      const back = new Set(got.map((m) => m.uid));
-      const whole: number[] = uids.filter((u) => !back.has(u));
-      for (const m of recent) {
-        if (!m.structure) { whole.push(m.uid); continue; }
-        const keys = textParts(m.structure);
-        if (!keys.length) continue;
-        const k = keys.join(" ");
-        groups.set(k, [...(groups.get(k) ?? []), m.uid]);
+      opened = true;
+      if (!box || box.readOnly !== true) {
+        const e: any = new Error("mailbox is not READ-ONLY"); e.code = "READONLY"; throw e;
       }
-      for (const [k, list] of groups) {
-        for await (const m of client.fetch(list, { uid: true, bodyParts: k.split(" ") }, { uid: true })) {
-          if (m.bodyParts) parts.set(m.uid, { data: m.bodyParts, ...((m as any).binaryParts ? { binary: (m as any).binaryParts } : {}) });
+      const gm = MAIL_PRESETS[c.preset as keyof typeof MAIL_PRESETS]?.gmail === true || client.capabilities.has("X-GM-EXT-1");
+      filtered = gm && c.skipPromotions && client.capabilities.has("X-GM-EXT-1");
+      // SINCE 는 날짜 단위라 하루 앞부터 찾고 받은 시각으로 다시 거른다
+      const query: Record<string, unknown> = { since: new Date(since.getTime() - 24 * 3600e3) };
+      // Gmail 검색어: 프로모션·소셜 빼기 + 설정의 search
+      const raw = [filtered ? "-category:promotions -category:social" : "", client.capabilities.has("X-GM-EXT-1") ? c.search ?? "" : ""].filter(Boolean).join(" ");
+      if (raw) query.gmraw = raw;
+      // imapflow 는 검색이 실패하면(끊김 등) 던지지 않고 false 를 준다 — 「메일 0통」으로 덮어쓰지 않게 실패로 본다
+      const found = await client.search(query, { uid: true });
+      if (!Array.isArray(found)) { const e: any = new Error(client.usable ? "SEARCH failed" : "Connection closed during SEARCH"); e.code = client.usable ? "" : "NoConnection"; throw e; }
+      const uids = found as number[];
+      if (uids.length) {
+        // 1) 머리말·구조·플래그·받은 때만(BODY.PEEK[HEADER] · BODYSTRUCTURE). 첨부 내용은 받지 않는다
+        type Got = { uid: number; flags?: Set<string>; internalDate?: Date | string; headers?: Buffer; structure?: MimeNode };
+        const got: Got[] = [];
+        for await (const m of client.fetch(uids, { uid: true, flags: true, internalDate: true, headers: true, bodyStructure: true }, { uid: true })) {
+          got.push({ uid: m.uid, flags: m.flags, internalDate: m.internalDate, headers: m.headers, structure: m.bodyStructure as MimeNode | undefined });
         }
-      }
-      const sources = new Map<number, Buffer>();
-      if (whole.length) {
-        for await (const m of client.fetch(whole, { uid: true, flags: true, internalDate: true, source: true }, { uid: true })) {
-          if (!m.source) continue;
-          sources.set(m.uid, m.source);
-          if (!back.has(m.uid)) recent.push({ uid: m.uid, flags: m.flags, internalDate: m.internalDate });
+        // 받은 시각으로 먼저 거른다(SINCE 는 하루 앞부터라 더 온다)
+        const recent = got.filter((m) => { const at = toIso(m.internalDate); return !at || Date.parse(at) >= since.getTime(); });
+        // 2) 글 본문 부분만(BODY.PEEK[n]). 같은 부분 번호끼리 묶어 한 번에. 구조를 못 받은 메일만 원문 전체(BODY.PEEK[])
+        const parts = new Map<number, { data: Map<string, Buffer>; binary?: Set<string> }>();
+        const groups = new Map<string, number[]>();
+        // 1) 에서 안 돌아온 메일(서버·파서가 그 구조를 못 다룸)과 구조 없는 메일은 원문 전체로 — 빠뜨리지 않는다
+        const back = new Set(got.map((m) => m.uid));
+        const whole: number[] = uids.filter((u) => !back.has(u));
+        for (const m of recent) {
+          if (!m.structure) { whole.push(m.uid); continue; }
+          const keys = textParts(m.structure);
+          if (!keys.length) continue;
+          const k = keys.join(" ");
+          groups.set(k, [...(groups.get(k) ?? []), m.uid]);
         }
-      }
-      for (const m of recent) {
-        // 메일 하나를 못 읽어도 그 메일만 건너뛴다(이상한 인코딩·깨진 구조로 계정 전체가 실패하지 않게)
-        try {
-          const src = sources.get(m.uid);
-          const p = parseMail(src ?? m.headers ?? Buffer.alloc(0));
-          const at = toIso(m.internalDate) ?? p.date;
-          if (!at || Date.parse(at) < since.getTime()) continue;
-          const pp = parts.get(m.uid);
-          const body = (src ? p.text : m.structure && pp ? bodyFromParts(m.structure, pp.data, pp.binary) : "").trim();
-          const attachments = m.structure ? attachmentsOf(m.structure) : [];
-          const snippet = body.replace(/\s+/g, " ").trim();
-          items.push({
-            uid: m.uid, from: p.from || p.fromAddr || t("status.no_sender"), fromAddr: p.fromAddr, subject: p.subject || t("status.no_title"), date: at,
-            snippet: snippet.length > SNIPPET_CHARS ? `${snippet.slice(0, SNIPPET_CHARS - 1)}…` : snippet,
-            body,
-            ...(attachments.length ? { attachments } : {}),
-            unread: !(m.flags?.has("\\Seen") ?? false), bulk: p.bulk,
-            ...(p.messageId ? { messageId: p.messageId } : {}),
-            ...(gm && p.messageId ? { link: `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(`rfc822msgid:${p.messageId}`)}` } : {}),
-          });
-        } catch { /* 이 메일만 건너뛴다 */ }
+        for (const [k, list] of groups) {
+          for await (const m of client.fetch(list, { uid: true, bodyParts: k.split(" ") }, { uid: true })) {
+            if (m.bodyParts) parts.set(m.uid, { data: m.bodyParts, ...((m as any).binaryParts ? { binary: (m as any).binaryParts } : {}) });
+          }
+        }
+        const sources = new Map<number, Buffer>();
+        if (whole.length) {
+          for await (const m of client.fetch(whole, { uid: true, flags: true, internalDate: true, source: true }, { uid: true })) {
+            if (!m.source) continue;
+            sources.set(m.uid, m.source);
+            if (!back.has(m.uid)) recent.push({ uid: m.uid, flags: m.flags, internalDate: m.internalDate });
+          }
+        }
+        for (const m of recent) {
+          // 메일 하나를 못 읽어도 그 메일만 건너뛴다(이상한 인코딩·깨진 구조로 계정 전체가 실패하지 않게)
+          try {
+            const src = sources.get(m.uid);
+            const p = parseMail(src ?? m.headers ?? Buffer.alloc(0));
+            const at = toIso(m.internalDate) ?? p.date;
+            if (!at || Date.parse(at) < since.getTime()) continue;
+            if (p.messageId && seen.has(p.messageId)) continue;
+            if (p.messageId) seen.add(p.messageId);
+            const pp = parts.get(m.uid);
+            const body = (src ? p.text : m.structure && pp ? bodyFromParts(m.structure, pp.data, pp.binary) : "").trim();
+            const attachments = m.structure ? attachmentsOf(m.structure) : [];
+            const snippet = body.replace(/\s+/g, " ").trim();
+            items.push({
+              uid: m.uid, from: p.from || p.fromAddr || t("status.no_sender"), fromAddr: p.fromAddr, subject: p.subject || t("status.no_title"), date: at,
+              snippet: snippet.length > SNIPPET_CHARS ? `${snippet.slice(0, SNIPPET_CHARS - 1)}…` : snippet,
+              body,
+              ...(attachments.length ? { attachments } : {}),
+              unread: !(m.flags?.has("\\Seen") ?? false), bulk: p.bulk,
+              ...(p.messageId ? { messageId: p.messageId } : {}),
+              ...(gm && p.messageId ? { link: `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(`rfc822msgid:${p.messageId}`)}` } : {}),
+            });
+          } catch { /* 이 메일만 건너뛴다 */ }
+        }
       }
     }
     items.sort((a, b) => b.date.localeCompare(a.date));

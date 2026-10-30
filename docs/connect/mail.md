@@ -91,6 +91,8 @@
 | `accounts[].user` |  | 메일 주소 |
 | `accounts[].password` |  | 앱 비밀번호(또는 서비스 비밀번호). 환경변수 `CY_AGENT_MAIL_PASSWORD`는 첫 계정 비밀번호로 쓰고 파일보다 먼저입니다 |
 | `accounts[].host` / `port` | `custom`만 · 포트 993 | IMAP 서버 |
+| `accounts[].mailbox` | `"INBOX"` | 읽을 메일함. 하나(`"KAIST"`)나 목록(`["INBOX", "KAIST"]`)으로 씁니다. Gmail이면 라벨 이름도 됩니다. 여러 메일함에 같이 있는 메일은 한 번만 넣습니다. 이름이 틀리면 「메일함을 열지 못했어요」가 보입니다 |
+| `accounts[].search` |  | Gmail 검색어(예: `"from:boss@example.com"`, `"-label:뉴스레터"`). Gmail 서버 검색(`X-GM-RAW`)에 더합니다. Gmail이 아닌 서버에서는 쓰지 않습니다 |
 | `sinceHours` | `24` | 몇 시간 전까지 받은 메일을 읽을지(모든 계정) |
 | `skipPromotions` | `true` | Gmail 프로모션·소셜 탭을 뺄지(모든 Gmail 계정) |
 

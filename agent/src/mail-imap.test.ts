@@ -65,7 +65,45 @@ test("읽기 전용: 서버가 EXAMINE 을 READ-WRITE 로 열면 아무것도 �
 test("코드에 쓰기 호출이 없다: 플래그 바꾸기·지우기·옮기기·복사·보내기", () => {
   const src = readFileSync(new URL("./mail-imap.ts", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
   assert.doesNotMatch(src, /messageFlags(Add|Remove|Set)|messageDelete|messageMove|messageCopy|\.append\(|mailboxCreate|mailboxDelete|mailboxRename|nodemailer|smtp[A-Za-z]*\(|createTransport/i);
-  assert.match(src, /mailboxOpen\("INBOX", \{ readOnly: true \}\)/);
+  assert.match(src, /mailboxOpen\(name, \{ readOnly: true \}\)/);
+});
+
+test("mailbox: 여러 메일함(Gmail 라벨)을 다 EXAMINE 으로 읽고, 같은 메일(Message-ID)은 한 번만", async () => {
+  const ago = (h: number) => new Date(NOW.getTime() - h * 3600e3);
+  const msg = (uid: number, box: string | undefined, id: string, h: number) => ({ uid, internalDate: ago(h), ...(box ? { box } : {}), raw: `From: a@example.com\r\nSubject: ${id}\r\nMessage-ID: <${id}@x>\r\n\r\nbody\r\n` });
+  const messages = [msg(1, undefined, "in", 1), msg(2, undefined, "both", 2), msg(1, "KAIST", "both", 2), msg(5, "KAIST", "lab", 3)];
+  await withServer({ gmail: false, messages }, async (port, s) => {
+    const r = await fetchRecentMail(conn(port, { mailbox: ["INBOX", "KAIST"] }), { now: NOW });
+    assert.ok(r.ok, JSON.stringify(r));
+    if (!r.ok) return;
+    assert.deepEqual(r.items.map((m) => m.subject), ["in", "both", "lab"]);
+    assert.ok(s.commands.some((c) => c === "EXAMINE INBOX") && s.commands.some((c) => c === "EXAMINE KAIST"), s.commands.join("\n"));
+    assert.ok(!s.commands.some((c) => /^SELECT\b/.test(c)));
+    // 문자열 하나도 된다
+    const one = await fetchRecentMail(conn(port, { mailbox: "KAIST" }), { now: NOW });
+    assert.ok(one.ok && one.items.map((m) => m.subject).join() === "both,lab");
+  });
+});
+
+test("mailbox: 없는 메일함이면 이름을 짚어 실패(로그인 거절로 보지 않는다)", async () => {
+  await withServer({}, async (port) => {
+    const r = await fetchRecentMail(conn(port, { mailbox: ["INBOX", "없는라벨"] }), { now: NOW });
+    assert.equal(r.ok, false);
+    if (!r.ok) { assert.equal(r.code, "mailbox"); assert.match(r.reason, /없는라벨/); }
+  });
+});
+
+test("search: Gmail 이면 X-GM-RAW 에 더하고, Gmail 이 아니면 쓰지 않는다", async () => {
+  await withServer({}, async (port, s) => {
+    const r = await fetchRecentMail(conn(port, { search: "from:boss@example.com" }), { now: NOW });
+    assert.ok(r.ok);
+    assert.ok(s.commands.some((c) => c.includes("-category:promotions -category:social from:boss@example.com")), s.commands.join("\n"));
+  });
+  await withServer({ gmail: false }, async (port, s) => {
+    const r = await fetchRecentMail(conn(port, { search: "from:boss@example.com" }), { now: NOW });
+    assert.ok(r.ok);
+    assert.ok(!s.commands.some((c) => /X-GM-RAW/.test(c)));
+  });
 });
 
 test("Gmail 이 아닌 서버(X-GM-EXT-1 없음): 거르지 않고 모두, 광고성은 표시만(모델이 거른다)", async () => {
