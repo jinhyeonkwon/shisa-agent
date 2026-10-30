@@ -91,8 +91,12 @@
 | `accounts[].user` |  | 메일 주소 |
 | `accounts[].password` |  | 앱 비밀번호(또는 서비스 비밀번호). 환경변수 `CY_AGENT_MAIL_PASSWORD`는 첫 계정 비밀번호로 쓰고 파일보다 먼저입니다 |
 | `accounts[].host` / `port` | `custom`만 · 포트 993 | IMAP 서버 |
+| `accounts[].mailbox` | `INBOX` | 읽을 폴더. 문자열 하나 또는 배열(예: `["INBOX", "Work"]`). 없는 폴더는 건너뛰고, 같은 메일(Message-ID)은 한 번만 씁니다 |
+| `accounts[].search` |  | IMAP 검색 조건(예: `{ "from": "boss@example.com" }`, `{ "seen": false }`). `from`·`to`·`subject`·`text`·`seen`·`flagged`·`or`·`not` 같은 키만 쓰고 기간은 `sinceHours`가 정합니다. Gmail이면 `gmraw`(Gmail 검색어)도 됩니다 |
 | `sinceHours` | `24` | 몇 시간 전까지 받은 메일을 읽을지(모든 계정) |
 | `skipPromotions` | `true` | Gmail 프로모션·소셜 탭을 뺄지(모든 Gmail 계정) |
+
+메일 카드의 계정 추가 폼에서 「가져올 폴더·조건(선택)」을 펼치면 폴더(쉼표로 여러 개)·보낸 사람·제목·안 읽은 메일만을 정할 수 있습니다(각각 `mailbox`, `search.from`·`subject`·`seen: false`로 저장). 이미 붙인 주소에서 비워 두면 전에 정한 값을 그대로 씁니다. 그 밖의 검색 키는 위처럼 설정 파일에서 정합니다.
 
 예전 한 계정 모양(`"mail": { "mode": "imap", "preset": "gmail", "user": "…", "password": "…" }`)도 그대로 읽습니다. 계정 하나로 보고, 카드에서 계정을 더하거나 바꾸면 위의 새 모양으로 저장합니다.
 

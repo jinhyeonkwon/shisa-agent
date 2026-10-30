@@ -392,12 +392,13 @@ function calendarBlock(cal, kind) {
 // 메일(앱 비밀번호), 계정 여러 개: 위에 연결된 계정 목록(서비스 · 주소 · 가져온 수 또는 못 가져온 이유 · [빼기]),
 // 그 아래 「계정 추가」 폼(서비스 고르기 · 주소(서비스 짐작) · 비밀번호(가림) · 서비스별 안내·링크 · [연결]). 목록이 있으면 폼은 「＋ 다른 메일 계정 추가」로 접어 둔다.
 // 같은 주소를 다시 넣으면 그 계정 비밀번호를 바꾼다(데몬). 비밀번호는 이 화면 메모리에만 있다가 [연결] 때 데몬으로 간다. 연결되면 폼을 비운다
-const mailDraft = { service: 'gmail', user: '', password: '', host: '', port: '', picked: false };
+// mailbox·from·subject·unseen: 「가져올 폴더·조건(선택)」 — 비우면 새 계정은 받은편지함 전부, 있던 계정은 전에 정한 그대로(데몬)
+const mailDraft = { service: 'gmail', user: '', password: '', host: '', port: '', mailbox: '', from: '', subject: '', unseen: false, picked: false };
 let mailConfirming = false;
 let mailRemoving = '';
 let mailAddOpen = false;
 export function clearMailDraft() {
-  Object.assign(mailDraft, { service: 'gmail', user: '', password: '', host: '', port: '', picked: false });
+  Object.assign(mailDraft, { service: 'gmail', user: '', password: '', host: '', port: '', mailbox: '', from: '', subject: '', unseen: false, picked: false });
   mailAddOpen = false;
 }
 function mailAccountsList(accounts, onRemove) {
@@ -413,6 +414,28 @@ function mailAccountsList(accounts, onRemove) {
       onClose: () => { if (mailRemoving === a.id) mailRemoving = ''; },
       onConfirm: () => onRemove(a.id),
     }) : null)));
+}
+// 가져올 폴더·조건(선택): 접어 두고, 쓴 값이 있으면 펼친 채로 그린다
+function mailFilterFields() {
+  const text = (key, label, placeholder) => {
+    const el = h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder, 'aria-label': label, value: mailDraft[key], dataset: { slot: `mail-${key}` } });
+    el.addEventListener('input', () => { mailDraft[key] = el.value; });
+    return h('label', null, h('span', { text: label }), el);
+  };
+  const unseen = h('input', { type: 'checkbox', dataset: { slot: 'mail-unseen' } });
+  unseen.checked = !!mailDraft.unseen;
+  unseen.addEventListener('change', () => { mailDraft.unseen = unseen.checked; });
+  const filled = !!(mailDraft.mailbox.trim() || mailDraft.from.trim() || mailDraft.subject.trim() || mailDraft.unseen);
+  const box = h('details.setup-mail-more.setup-mail-filter', null,
+    h('summary', { text: t('setup.view_mailfilter_title') }),
+    h('div.setup-fields', null,
+      text('mailbox', t('setup.view_mailfilter_mailbox'), t('setup.view_mailfilter_mailbox_ph')),
+      text('from', t('setup.view_mailfilter_from'), 'boss@example.com'),
+      text('subject', t('setup.view_mailfilter_subject'), t('setup.view_mailfilter_subject_ph')),
+      h('label.setup-check', null, unseen, h('span', { text: t('setup.view_mailfilter_unseen') }))),
+    h('small.setup-mail-note', { text: t('setup.view_mailfilter_note') }));
+  box.open = filled;
+  return box;
 }
 function mailForm({ busy, result, onConnect, onOpen }) {
   const kids = [];
@@ -451,6 +474,7 @@ function mailForm({ busy, result, onConnect, onOpen }) {
   kids.push(h('ol.setup-mail-steps', null, svc.steps.map((t) => h('li', null, ...richNodes(t)))));
   if (svc.links.length && onOpen) kids.push(h('div.setup-fields.row', null, svc.links.map((l) => h('button.ghost', { type: 'button', text: l.label, title: l.url, onclick: () => onOpen(l.url) }))));
   kids.push(h('div.setup-fields', null, ...fields));
+  kids.push(mailFilterFields());
   // 자세한 방법(서비스별)·연결한 뒤 확인하기: 접어 두고 눌러서 펼친다
   if (svc.guide?.length) kids.push(h('details.setup-mail-more', null, h('summary', { text: t('setup.view_mailform_text_3', { title: svc.title }) }), h('ol', null, svc.guide.map((t) => h('li', null, ...richNodes(t))))));
   kids.push(h('details.setup-mail-more', null, h('summary', { text: t('setup.view_mailform_text') }), h('ol', null, MAIL_CHECK.map((t) => h('li', null, ...richNodes(t))))));

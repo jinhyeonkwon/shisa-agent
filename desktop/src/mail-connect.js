@@ -130,6 +130,23 @@ export function mailFormCheck(f = {}) {
   return { ok: true, why: '' };
 }
 
+// 폴더 칸(쉼표로 여러 개) → 문자열 하나 또는 배열(빈 이름·같은 이름은 뺀다). 비면 undefined(데몬: 새 계정은 INBOX, 있던 계정은 전에 정한 그대로)
+export function mailboxField(v) {
+  const list = [...new Set(String(v ?? '').split(',').map((x) => x.trim()).filter(Boolean))];
+  return list.length > 1 ? list : list[0];
+}
+
+// 조건 칸(보낸 사람·제목·안 읽은 것만) → IMAP 검색 객체. 비면 undefined
+export function mailSearchField(f = {}) {
+  const s = {};
+  const from = String(f.from ?? '').trim();
+  const subject = String(f.subject ?? '').trim();
+  if (from) s.from = from;
+  if (subject) s.subject = subject;
+  if (f.unseen === true) s.seen = false;
+  return Object.keys(s).length ? s : undefined;
+}
+
 // 데몬(POST /connectors/mail)으로 보낼 본문. 모르는 칸은 넣지 않는다
 export function mailConnectBody(f = {}) {
   const svc = mailService(f.service);
@@ -139,8 +156,14 @@ export function mailConnectBody(f = {}) {
     const port = Number(f.port);
     if (Number.isInteger(port) && port > 0 && port < 65536) body.port = port;
   }
+  const mailbox = typeof f.mailbox === 'string' ? mailboxField(f.mailbox) : undefined;
+  if (mailbox) body.mailbox = mailbox;
+  const search = mailSearchField(f);
+  if (search) body.search = search;
   return body;
 }
+
+const okText = (x) => typeof x === 'string' && x.trim() !== '' && x.length <= 200;
 
 // 메인이 렌더러에서 받은 값을 그대로 넘기지 않게: 모양만 맞는 것만 남긴다(null = 거절)
 export function cleanMailBody(x) {
@@ -153,6 +176,20 @@ export function cleanMailBody(x) {
     if (typeof x.host !== 'string' || x.host.length > 253) return null;
     out.host = x.host;
     if (x.port !== undefined) { if (!Number.isInteger(x.port)) return null; out.port = x.port; }
+  }
+  // 폴더: 이름 하나 또는 배열(20개까지). 검색: 보낸 사람·제목·안 읽은 것만(패널이 만드는 키만)
+  if (x.mailbox !== undefined) {
+    const ok = okText(x.mailbox) || (Array.isArray(x.mailbox) && x.mailbox.length > 0 && x.mailbox.length <= 20 && x.mailbox.every(okText));
+    if (!ok) return null;
+    out.mailbox = x.mailbox;
+  }
+  if (x.search !== undefined) {
+    const s = x.search;
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+    const keys = Object.keys(s);
+    if (!keys.length || keys.some((k) => !['from', 'subject', 'seen'].includes(k))) return null;
+    if ((s.from !== undefined && !okText(s.from)) || (s.subject !== undefined && !okText(s.subject)) || (s.seen !== undefined && s.seen !== false)) return null;
+    out.search = { ...s };
   }
   return out;
 }

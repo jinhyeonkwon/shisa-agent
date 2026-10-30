@@ -65,6 +65,43 @@ test("예전 한 계정 모양: 읽을 때 accounts 하나로(id 는 주소로) 
   });
 });
 
+test("폴더(mailbox)·검색(search): 계정마다 읽고, 같은 주소로 다시 연결해도·다른 계정을 빼도 파일에서 사라지지 않는다", async () => {
+  const path = join(tmp(), "config.json");
+  const acc = { preset: "naver", user: "a@naver.com", password: "pw-1", mailbox: ["INBOX", "Work"], search: { unseen: true } };
+  writeFileSync(path, JSON.stringify({ connectors: { mail: { mode: "imap", accounts: [acc, { preset: "daum", user: "b@daum.net", password: "pw-b" }] } } }));
+  const c = resolveConnectors({}, readJson(path)).mail as MailImapConn;
+  assert.deepEqual([c.accounts[0].mailbox, c.accounts[0].search], [["INBOX", "Work"], { unseen: true }]);
+  let tested: MailTarget | undefined;
+  const r = await connectMail({ preset: "naver", user: "a@naver.com", password: "pw-2" }, { path, current: () => c, env: {}, fetch: async (t) => { tested = t; return { ok: true, items: [], filtered: false }; }, apply: () => {} });
+  assert.ok(r.ok && r.updated);
+  assert.deepEqual([tested?.mailbox, tested?.search], [["INBOX", "Work"], { unseen: true }], "시험 로그인도 그 폴더·검색으로");
+  let saved = readJson(path).connectors.mail.accounts[0];
+  assert.deepEqual([saved.password, saved.mailbox, saved.search], ["pw-2", ["INBOX", "Work"], { unseen: true }]);
+  assert.ok(removeMailAccount(mailAccountId("b@daum.net"), { path, env: {}, apply: () => {} }).ok);
+  saved = readJson(path).connectors.mail.accounts[0];
+  assert.deepEqual([saved.mailbox, saved.search], [["INBOX", "Work"], { unseen: true }]);
+});
+
+test("폴더·검색을 패널에서 보내면: 그것으로 시험 로그인하고 저장한다(있던 값을 바꾼다) · 틀린 모양은 거절", async () => {
+  const path = join(tmp(), "config.json");
+  writeFileSync(path, JSON.stringify({ connectors: { mail: { mode: "imap", accounts: [{ preset: "naver", user: "a@naver.com", password: "pw-1", mailbox: "Old", search: { unseen: true } }] } } }));
+  const c = resolveConnectors({}, readJson(path)).mail as MailImapConn;
+  let tested: MailTarget | undefined;
+  const deps = { path, current: () => c, env: {}, fetch: async (t: MailTarget) => { tested = t; return { ok: true as const, items: [], filtered: false }; }, apply: () => {} };
+  const r = await connectMail({ preset: "naver", user: "a@naver.com", password: "", mailbox: ["INBOX", "Work"], search: { from: "boss@x.com", seen: false } }, deps);
+  assert.ok(r.ok && r.updated);
+  assert.deepEqual([tested?.mailbox, tested?.search], [["INBOX", "Work"], { from: "boss@x.com", seen: false }]);
+  const saved = readJson(path).connectors.mail.accounts[0];
+  assert.deepEqual([saved.password, saved.mailbox, saved.search], ["pw-1", ["INBOX", "Work"], { from: "boss@x.com", seen: false }]);
+  const added = await connectMail({ preset: "daum", user: "b@daum.net", password: "pw-b", mailbox: "Work" }, deps);
+  assert.ok(added.ok && !added.updated);
+  assert.equal(readJson(path).connectors.mail.accounts[1].mailbox, "Work");
+  for (const bad of [{ mailbox: [] }, { mailbox: 5 }, { mailbox: " " }, { search: [] }, { search: "x" }]) {
+    const no = await connectMail({ preset: "naver", user: "a@naver.com", password: "pw-1", ...bad }, deps);
+    assert.ok(!no.ok && no.status === 400, JSON.stringify(bad));
+  }
+});
+
 // ── 추가 · 같은 주소 · 빼기 ─────────────────────────────
 
 test("추가 → 같은 주소는 새로 붙이지 않고 비밀번호만 바꾼다 → 하나 빼기(비밀번호까지) → 마지막이면 꺼짐", async () => {

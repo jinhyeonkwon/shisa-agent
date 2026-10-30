@@ -43,6 +43,16 @@ test('보낼 본문 · 메인이 받는 모양(모르는 칸·틀린 서비스�
   assert.equal(cleanMailBody({ preset: 'yahoo', user: 'a', password: 'p' }), null);
   assert.equal(cleanMailBody({ preset: 'gmail', user: 'a', password: 5 }), null);
   assert.equal(cleanMailBody('x'), null);
+  // 폴더(mailbox)·검색(search): 「가져올 폴더·조건」 칸에서. 비우면 보내지 않는다(데몬: 있던 계정은 파일 값을 지킨다)
+  assert.deepEqual(mailConnectBody({ service: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: ' ', from: '', subject: '', unseen: false }), { preset: 'gmail', user: 'a@gmail.com', password: 'p' });
+  assert.deepEqual(mailConnectBody({ service: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: 'Work' }), { preset: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: 'Work' });
+  assert.deepEqual(mailConnectBody({ service: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: 'INBOX, Work,,INBOX', from: ' boss@x.com ', subject: '회의', unseen: true }),
+    { preset: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: ['INBOX', 'Work'], search: { from: 'boss@x.com', subject: '회의', seen: false } });
+  assert.deepEqual(cleanMailBody({ preset: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: ['INBOX', 'Work'], search: { from: 'b@x.com', seen: false } }), { preset: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: ['INBOX', 'Work'], search: { from: 'b@x.com', seen: false } });
+  assert.equal(cleanMailBody({ preset: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: [] }), null);
+  assert.equal(cleanMailBody({ preset: 'gmail', user: 'a@gmail.com', password: 'p', mailbox: 5 }), null);
+  assert.equal(cleanMailBody({ preset: 'gmail', user: 'a@gmail.com', password: 'p', search: { gmraw: 'x' } }), null, '패널이 만들지 않는 검색 키는 거절');
+  assert.equal(cleanMailBody({ preset: 'gmail', user: 'a@gmail.com', password: 'p', search: { seen: true } }), null);
 });
 
 test('연결 카드: imap 메일은 주소·서비스·가져온 메일 수 · 비밀번호는 받지도 않는다', () => {
@@ -117,6 +127,18 @@ test('화면: 더 연결하기에 메일 카드(서비스 고르기·주소·가
   pw2.fire('input');
   card2.all((n) => n.tagName === 'BUTTON' && n.text === '연결')[0].fire('click');
   assert.deepEqual(sent, [{ preset: 'naver', user: 'gildong@naver.com', password: 'secret-pw' }]);
+  // 가져올 폴더·조건(선택): 접혀 있다가, 쓰면 본문에 mailbox·search 로
+  assert.match(card2.text, /가져올 폴더·조건\(선택\)/);
+  const filter = card2.byClass('setup-mail-filter')[0];
+  assert.ok(filter && !filter.open, '처음엔 접어 둔다');
+  const box = card2.all((n) => n.attrs['aria-label'] === '폴더(쉼표로 여러 개)')[0];
+  box.value = 'INBOX, Work';
+  box.fire('input');
+  const unseen = card2.all((n) => n.dataset?.slot === 'mail-unseen')[0];
+  unseen.checked = true;
+  unseen.fire('change');
+  card2.all((n) => n.tagName === 'BUTTON' && n.text === '연결')[0].fire('click');
+  assert.deepEqual(sent[1], { preset: 'naver', user: 'gildong@naver.com', password: 'secret-pw', mailbox: ['INBOX', 'Work'], search: { seen: false } });
   // 실패 이유는 카드 아래에
   renderSetup(root, { ...state, mail: { ...mail, result: { ok: false, text: '메일 주소나 비밀번호가 맞지 않아요.' } } });
   assert.match(root.byClass('setup-mail')[0].text, /메일 주소나 비밀번호가 맞지 않아요/);

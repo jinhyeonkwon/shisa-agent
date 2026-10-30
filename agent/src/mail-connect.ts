@@ -1,4 +1,4 @@
-// 메일(앱 비밀번호) 계정 추가·빼기: 패널 「더 연결하기」 메일 카드 → POST /connectors/mail { preset, user, password, host?, port? } · DELETE /connectors/mail/:id.
+// 메일(앱 비밀번호) 계정 추가·빼기: 패널 「더 연결하기」 메일 카드 → POST /connectors/mail { preset, user, password, host?, port?, mailbox?, search? } · DELETE /connectors/mail/:id.
 // 추가는 저장하기 전에 진짜로 로그인해 본다(LOGIN → EXAMINE INBOX → 최근 메일 읽기). 실패하면 아무것도 저장하지 않고 이유를 사람 말로 돌려준다.
 // 성공하면 config.json 의 connectors.mail 을 { mode: "imap", accounts: [...] } 로 쓴다(다른 키는 그대로, 원자적 쓰기, 파일 권한 600).
 // 예전 한 계정 모양(user·password 가 mail 바로 아래)은 accounts 하나로 읽고, 이번에 새 모양으로 바꿔 쓴다. 계정 수 상한은 없다.
@@ -13,7 +13,7 @@ import { addLogSecret } from "./log.ts";
 import { stripBom, writeFileAtomic } from "./fs-atomic.ts";
 import { t as tr } from "./i18n.ts";
 
-export type MailConnectBody = { preset?: string; user?: string; password?: string; host?: string; port?: number; secure?: boolean; sinceHours?: number };
+export type MailConnectBody = { preset?: string; user?: string; password?: string; host?: string; port?: number; secure?: boolean; sinceHours?: number; mailbox?: string | string[]; search?: Record<string, unknown> };
 // updated: 이미 있던 주소라 그 계정을 바꿨다(새로 붙이지 않음). accounts: 저장한 뒤 계정 수
 export type MailConnectResult =
   | { ok: true; id: string; account: string; preset: string; count: number; filtered: boolean; updated: boolean; accounts: number }
@@ -22,7 +22,7 @@ export type MailRemoveResult =
   | { ok: true; id: string; account: string; left: number }
   | { ok: false; status: 400 | 404 | 500; error: string };
 
-const KEYS = new Set(["preset", "user", "password", "host", "port", "secure", "sinceHours"]);
+const KEYS = new Set(["preset", "user", "password", "host", "port", "secure", "sinceHours", "mailbox", "search"]);
 const obj = (x: unknown) => (x && typeof x === "object" && !Array.isArray(x) ? (x as Record<string, unknown>) : undefined);
 const imapOf = (c: Conn | undefined): MailImapConn | undefined => (c && c.cap === "mail" && c.mode === "imap" ? c : undefined);
 
@@ -78,6 +78,16 @@ export function mailConnectPlan(body: unknown, cur: Conn | undefined, env: NodeJ
     if (b.port !== undefined) account.port = b.port;
     if (b.secure === false) account.secure = false;
   }
+  // 폴더·검색(패널 「가져올 폴더·조건」): 보냈으면 그것으로, 안 보냈으면 있던 계정 것을 그대로(connectMail)
+  if (b.mailbox !== undefined) {
+    const ok = (x: unknown) => typeof x === "string" && !!x.trim() && x.length <= 200;
+    if (!(ok(b.mailbox) || (Array.isArray(b.mailbox) && b.mailbox.length > 0 && b.mailbox.length <= 20 && b.mailbox.every(ok)))) return { error: tr("status.mail_mailbox_bad") };
+    account.mailbox = b.mailbox;
+  }
+  if (b.search !== undefined) {
+    if (!obj(b.search)) return { error: tr("status.mail_search_bad") };
+    account.search = b.search;
+  }
   let sinceHours: number | undefined;
   if (b.sinceHours !== undefined) {
     if (typeof b.sinceHours !== "number" || !Number.isFinite(b.sinceHours) || b.sinceHours <= 0) return { error: tr("status.mail_since_bad") };
@@ -85,7 +95,8 @@ export function mailConnectPlan(body: unknown, cur: Conn | undefined, env: NodeJ
   }
   if (password.trim()) account.password = preset === "gmail" ? password.replace(/\s+/g, "") : password.trim();
   // 시험할 연결: 이 계정 하나(기간·거르기는 지금 설정 그대로)
-  const test = mailImapConn({ accounts: [account], sinceHours: sinceHours ?? now?.sinceHours, skipPromotions: now?.skipPromotions }, envFirst && !account.password ? env : {});
+  // 폴더·검색을 안 보냈고 이미 있던 계정이면 그 계정의 것으로 시험한다(넘겨 줄 결과가 동기화와 같게). 저장은 connectMail 이 파일 값을 지킨다
+  const test = mailImapConn({ accounts: [{ ...account, ...(account.mailbox === undefined && same?.mailbox ? { mailbox: same.mailbox } : {}), ...(account.search === undefined && same?.search ? { search: same.search } : {}) }], sinceHours: sinceHours ?? now?.sinceHours, skipPromotions: now?.skipPromotions }, envFirst && !account.password ? env : {});
   if (test.mode !== "imap") return { error: test.reason?.replace(/^mail: /, "") ?? tr("status.mail_check_cfg") };
   const t = { ...test.accounts[0], sinceHours: test.sinceHours, skipPromotions: test.skipPromotions };
   if (!t.password) return { error: tr("status.mail_need_pw") };
@@ -124,7 +135,12 @@ export async function connectMail(body: unknown, deps: {
     if (i >= 0) {
       const old = v.accounts[i];
       // 비밀번호를 비워 보냈으면 파일에 있던 것을 그대로(환경변수 값을 파일에 쓰지 않는다)
-      v.accounts[i] = { ...plan.account, id: old.id, ...(plan.account.password === undefined && old.password !== undefined ? { password: old.password } : {}) };
+      // 폴더(mailbox)·검색(search)을 안 보냈으면 파일에 있던 것을 그대로
+      v.accounts[i] = {
+        ...plan.account, id: old.id, ...(plan.account.password === undefined && old.password !== undefined ? { password: old.password } : {}),
+        ...(plan.account.mailbox === undefined && old.mailbox !== undefined ? { mailbox: old.mailbox } : {}),
+        ...(plan.account.search === undefined && old.search !== undefined ? { search: old.search } : {}),
+      };
     } else v.accounts.push(plan.account);
     if (plan.sinceHours !== undefined) v.sinceHours = plan.sinceHours;
     const value = mailValue(v);
